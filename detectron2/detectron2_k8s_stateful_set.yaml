@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: Service
+metadata:
+ name: headless-service
+spec:
+ clusterIP: None
+ selector:
+   app: training-pods
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: checkpoints-storage-class
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+  fstype: ext4
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: statefulset
+spec:
+  serviceName: headless-service
+  replicas: 2 #  equals to number of nodes
+  selector:
+    matchLabels:
+      app: training-pods
+  template:
+    metadata:
+      labels:
+        app: training-pods
+    spec:
+      containers:
+        - name: detectron2
+          image: powatsoi/detectron2:k8s
+          imagePullPolicy: Always
+          resources:
+            limits:
+              nvidia.com/gpu: 1  # how many gpus per node
+          env:
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NCCL_DEBUG
+              value: "INFO"
+          command: [ "python", "tools/train_net.py", "--num-gpus", "1",
+                     "--num-machines", "2",
+                     "--config-file", "configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml",
+                     "SOLVER.IMS_PER_BATCH", "4", "SOLVER.BASE_LR", "0.0025"]
+          volumeMounts:
+            - name: datasets
+              mountPath: /home/appuser/detectron2_repo/datasets
+            - name: checkpoints
+              mountPath: /checkpoints
+      volumes:
+        - name: datasets
+          gcePersistentDisk:
+            pdName: datasets
+            fsType: ext4
+            readOnly: true
+  volumeClaimTemplates:
+    - metadata:
+        name: checkpoints
+      spec:
+        storageClassName: checkpoints-storage-class
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
